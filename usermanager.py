@@ -1,3 +1,4 @@
+# USER MANAGER PROGRAM(DOUBLES AS A CHATTING SYSTEM)
 import getpass
 import json
 import os
@@ -427,6 +428,7 @@ def admin_menu(admin, manager):
         print("5. Create group")
         print("6. Add user to group")
         print("7. Log out")
+        print("8. Manage my knowledge")
         choice = input("Choose an option: ").strip()
         if choice == "1":
             for username in sorted(manager.users):
@@ -470,8 +472,10 @@ def admin_menu(admin, manager):
                 print("Group or user not found.")
         elif choice == "7":
             break
+        elif choice == "8":
+            add_knowledge_menu(admin, manager)
         else:
-            print("Choose 1, 2, 3, 4, 5, 6, or 7.")
+            print("Choose 1, 2, 3, 4, 5, 6, 7, or 8.")
 
 
 def main():
