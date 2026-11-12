@@ -1,9 +1,15 @@
+import getpass
+import json
+import os
+import subprocess
+
+
 # user class for standard accounts
 class User:
     def __init__(self, username, password):
-        self._username = username          # protected attribute
-        self.__password = password       # private attribute (hidden for securely, will have to encrypt later)
-        self._knowledge = []               # protected list for knowledge items
+        self._username = username  # protected attribute
+        self.__password = password  # private attribute, stored as plain text
+        self._knowledge = []  # protected list for knowledge items
 
     def get_username(self):
         # public method to safely view the protected username
@@ -17,36 +23,68 @@ class User:
         # add a piece of knowledge to this user's protected list
         self._knowledge.append(item)
 
+    def get_knowledge(self):
+        # public method to view this user's knowledge items
+        return list(self._knowledge)
+
+    def is_admin(self):
+        # public method to check this user's account type
+        return False
+
+    def to_record(self):
+        # prepare this user's data for the protected storage file
+        knowledge = []
+        for item in self._knowledge:
+            knowledge.append(item.to_record())
+        return {
+            "password": self.__password,
+            "admin": self.is_admin(),
+            "knowledge": knowledge
+        }
+
 
 # admin user class that inherits from user
 class AdminUser(User):
     def __init__(self, username, password):
         super().__init__(username, password)
-        self.__is_admin = True             # private admin flag
+        self.__is_admin = True  # private admin flag
 
-    def remove_user(self, user_list, target_name):
-        # loop through the list to find and remove the user usi    `ng their protected username
-        for user in user_list:
-            if user.get_username() == target_name:
-                user_list.remove(user)
+    def is_admin(self):
+        # public method to check this user's account type
+        return self.__is_admin
+
+    def remove_user(self, user_table, target_name):
+        # remove a user from the hash table using their username
+        if target_name in user_table and target_name != self.get_username():
+            del user_table[target_name]
+            return True
+        return False
 
 
 # class for a piece of stored information
 class KnowledgeItem:
     def __init__(self, title, content):
-        self._title = title                # protected title
-        self.__content = content           # private encrypted content
+        self._title = title  # protected title
+        self.__content = content  # private content
 
     def get_content(self):
-        # public method to access private content of any function that ha access to the KnowledgeItem instance
+        # public method to access private content
         return self.__content
+
+    def get_title(self):
+        # public method to view the knowledge title
+        return self._title
+
+    def to_record(self):
+        # save this knowledge item's content
+        return {"title": self._title, "content": self.__content}
 
 
 # class to group multiple users together
 class Group:
     def __init__(self, name):
-        self._name = name                  # protected group name
-        self.__members = []              # private list of members
+        self._name = name  # protected group name
+        self.__members = []  # private list of members
 
     def add_member(self, user):
         # add a user to the private members list
@@ -54,4 +92,218 @@ class Group:
 
     def get_members(self):
         # public method to view members
-        return self.__members
+        return list(self.__members)
+
+
+class UserManager:
+    def __init__(self, storage_path):
+        self._storage_path = storage_path
+        self.users = {}  # hash table of usernames and User objects
+        self._prepare_storage()
+        self._load_users()
+
+    def _prepare_storage(self):
+        # create the private directory before creating the user file
+        directory = os.path.dirname(self._storage_path)
+        os.makedirs(directory, exist_ok=True)
+        if os.name == "nt":
+            self._set_windows_permissions(directory, True)
+            if os.path.exists(self._storage_path):
+                self._set_windows_permissions(self._storage_path, False)
+        else:
+            os.chmod(directory, 0o700)
+            if os.path.exists(self._storage_path):
+                os.chmod(self._storage_path, 0o600)
+
+    # Because i have not done encryption yet, and may not do it if running low on time.
+    # I will explain how this works. Instead of setting up a secure, unreadable
+    # auth system from scratch, I will instead just store the password file
+    # in such a place where the actual admins of the computer, could only see it.
+    def _set_windows_permissions(self, path, is_directory):
+        # restrict storage to this account, SYSTEM, and local administrators
+        username = os.environ.get("USERNAME")
+        if not username:
+            raise OSError("Could not identify the Windows account for file permissions.")
+        domain = os.environ.get("USERDOMAIN", "")
+        account = os.path.join(domain, username)
+        permission = "F"
+        if is_directory:
+            permission = "(OI)(CI)F"
+        subprocess.run(
+            [
+                "icacls", path, "/inheritance:r", "/grant:r",
+                account + ":" + permission,
+                "SYSTEM:" + permission,
+                "Administrators:" + permission
+            ],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+
+    def _load_users(self):
+        # load saved users into the hash table
+        if not os.path.exists(self._storage_path):
+            return
+        with open(self._storage_path, "r", encoding="utf-8") as file:
+            data = json.load(file)
+        for username, record in data.get("users", {}).items():
+            user_class = AdminUser if record.get("admin", False) else User
+            user = user_class(username, record["password"])
+            for item_record in record.get("knowledge", []):
+                item = KnowledgeItem(item_record["title"], item_record["content"])
+                user.add_knowledge(item)
+            self.users[username] = user
+
+    def _save_users(self):
+        # save the hash table to the protected text file
+        data = {"users": {}}
+        for username, user in self.users.items():
+            data["users"][username] = user.to_record()
+        with open(self._storage_path, "w", encoding="utf-8") as file:
+            json.dump(data, file, indent=2)
+        if os.name == "nt":
+            self._set_windows_permissions(self._storage_path, False)
+        else:
+            os.chmod(self._storage_path, 0o600)
+
+    def add_user(self, username, password, is_admin=False):
+        # add a user to the hash table and save the updated data
+        username = username.strip()
+        if not username or not password:
+            raise ValueError("Username and password must not be empty.")
+        if username in self.users:
+            return False
+        user_class = AdminUser if is_admin else User
+        self.users[username] = user_class(username, password)
+        self._save_users()
+        return True
+
+    def authenticate(self, username, password):
+        # check the username and password without exposing the password
+        user = self.users.get(username)
+        if user and user.check_password(password):
+            return user
+        return None
+
+    def remove_user(self, admin, target_name):
+        # allow only an administrator to remove another user
+        if not admin.is_admin():
+            return False
+        removed = admin.remove_user(self.users, target_name)
+        if removed:
+            self._save_users()
+        return removed
+
+    def save(self):
+        # save changes made to a user's knowledge
+        self._save_users()
+
+
+def add_knowledge_menu(user, manager):
+    # let a logged-in user add or view their knowledge
+    while True:
+        print("\n1. Add knowledge")
+        print("2. View knowledge")
+        print("3. Log out")
+        choice = input("Choose an option: ").strip()
+        if choice == "1":
+            title = input("Knowledge title: ").strip()
+            content = input("Knowledge content: ")
+            if not title or not content:
+                print("Title and content must not be empty.")
+            else:
+                item = KnowledgeItem(title, content)
+                user.add_knowledge(item)
+                manager.save()
+                print("Knowledge saved.")
+        elif choice == "2":
+            for item in user.get_knowledge():
+                print("\n" + item.get_title() + ":")
+                print(item.get_content())
+            if not user.get_knowledge():
+                print("No knowledge has been saved yet.")
+        elif choice == "3":
+            break
+        else:
+            print("Choose 1, 2, or 3.")
+
+
+def admin_menu(admin, manager):
+    # let an administrator manage user accounts
+    while True:
+        print("\n1. List users")
+        print("2. Add user")
+        print("3. Remove user")
+        print("4. Log out")
+        choice = input("Choose an option: ").strip()
+        if choice == "1":
+            for username in sorted(manager.users):
+                role = "admin" if manager.users[username].is_admin() else "user"
+                print(username + " (" + role + ")")
+        elif choice == "2":
+            username = input("New username: ").strip()
+            password = getpass.getpass("New password: ")
+            if not username or not password:
+                print("Username and password must not be empty.")
+            elif manager.add_user(username, password):
+                print("User added.")
+            else:
+                print("That username already exists.")
+        elif choice == "3":
+            target_name = input("Username to remove: ").strip()
+            if manager.remove_user(admin, target_name):
+                print("User removed.")
+            else:
+                print("User not found or you cannot remove your own account.")
+        elif choice == "4":
+            break
+        else:
+            print("Choose 1, 2, 3, or 4.")
+
+
+def main():
+    # start the user manager and keep showing the main menu
+    folder = os.path.dirname(os.path.abspath(__file__))
+    storage_path = os.path.join(folder, "private_folder", "passwords.txt")
+    manager = UserManager(storage_path)
+
+    if not manager.users:
+        print("Create the initial administrator account.")
+        username = ""
+        while not username:
+            username = input("Administrator username: ").strip()
+            if not username:
+                print("Username must not be empty.")
+        while True:
+            password = getpass.getpass("Administrator password: ")
+            confirmation = getpass.getpass("Confirm password: ")
+            if password and password == confirmation:
+                break
+            print("Passwords must match and must not be empty.")
+        manager.add_user(username, password, is_admin=True)
+        print("Administrator account created.")
+
+    while True:
+        print("\n1. Log in")
+        print("2. Quit")
+        choice = input("Choose an option: ").strip()
+        if choice == "1":
+            username = input("Username: ").strip()
+            password = getpass.getpass("Password: ")
+            user = manager.authenticate(username, password)
+            if user is None:
+                print("Username or password is incorrect.")
+            elif user.is_admin():
+                admin_menu(user, manager)
+            else:
+                add_knowledge_menu(user, manager)
+        elif choice == "2":
+            print("Goodbye.")
+            break
+        else:
+            print("Choose 1 or 2.")
+
+
+if __name__ == "__main__":
+    main()

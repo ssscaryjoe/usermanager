@@ -150,3 +150,5 @@ vite.config.ts.timestamp-*
 
 # Private folder
 private/
+private_folder/
+__pycache__/
