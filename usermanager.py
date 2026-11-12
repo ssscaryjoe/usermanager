@@ -4,6 +4,16 @@ import os
 import subprocess
 
 
+def has_admin_privileges():
+    # check for Administrator on Windows or root on other supported systems
+    if os.name == "nt":
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    if hasattr(os, "geteuid"):
+        return os.geteuid() == 0
+    return False
+
+
 # user class for standard accounts
 class User:
     def __init__(self, username, password):
@@ -109,6 +119,8 @@ class Group:
 
 class UserManager:
     def __init__(self, storage_path):
+        if not has_admin_privileges():
+            raise PermissionError("Run this program as Administrator or root.")
         self._storage_path = storage_path
         self.users = {}  # hash table of usernames and User objects
         self.groups = {}  # hash table of group names and Group objects
@@ -124,30 +136,28 @@ class UserManager:
             if os.path.exists(self._storage_path):
                 self._set_windows_permissions(self._storage_path, False)
         else:
+            os.chown(directory, 0, 0)
             os.chmod(directory, 0o700)
             if os.path.exists(self._storage_path):
+                os.chown(self._storage_path, 0, 0)
                 os.chmod(self._storage_path, 0o600)
 
-    # Because i have not done encryption yet, and may not do it if running low on time.
-    # I will explain how this works. Instead of setting up a secure, unreadable
-    # auth system from scratch, I will instead just store the password file
-    # in such a place where the actual admins of the computer, could only see it.
     def _set_windows_permissions(self, path, is_directory):
-        # restrict storage to this account, SYSTEM, and local administrators
-        username = os.environ.get("USERNAME")
-        if not username:
-            raise OSError("Could not identify the Windows account for file permissions.")
-        domain = os.environ.get("USERDOMAIN", "")
-        account = os.path.join(domain, username)
+        # restrict storage to Windows Administrators and SYSTEM
         permission = "F"
         if is_directory:
             permission = "(OI)(CI)F"
         subprocess.run(
+            ["icacls", path, "/setowner", "*S-1-5-32-544"],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        subprocess.run(
             [
                 "icacls", path, "/inheritance:r", "/grant:r",
-                account + ":" + permission,
-                "SYSTEM:" + permission,
-                "Administrators:" + permission
+                "*S-1-5-18:" + permission,
+                "*S-1-5-32-544:" + permission
             ],
             check=True,
             capture_output=True,
@@ -189,6 +199,7 @@ class UserManager:
         if os.name == "nt":
             self._set_windows_permissions(self._storage_path, False)
         else:
+            os.chown(self._storage_path, 0, 0)
             os.chmod(self._storage_path, 0o600)
 
     def add_user(self, username, password, is_admin=False):
@@ -331,6 +342,9 @@ def admin_menu(admin, manager):
 
 def main():
     # start the user manager and keep showing the main menu
+    if not has_admin_privileges():
+        print("Run this program as Administrator or root.")
+        return
     folder = os.path.dirname(os.path.abspath(__file__))
     storage_path = os.path.join(folder, "private_folder", "passwords.txt")
     manager = UserManager(storage_path)
