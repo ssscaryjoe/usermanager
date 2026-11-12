@@ -88,17 +88,30 @@ class Group:
 
     def add_member(self, user):
         # add a user to the private members list
-        self.__members.append(user)
+        if user not in self.__members:
+            self.__members.append(user)
 
     def get_members(self):
         # public method to view members
         return list(self.__members)
+
+    def remove_member(self, username):
+        # remove a user from the group by username
+        self.__members = [
+            user for user in self.__members
+            if user.get_username() != username
+        ]
+
+    def get_name(self):
+        # public method to view the group name
+        return self._name
 
 
 class UserManager:
     def __init__(self, storage_path):
         self._storage_path = storage_path
         self.users = {}  # hash table of usernames and User objects
+        self.groups = {}  # hash table of group names and Group objects
         self._prepare_storage()
         self._load_users()
 
@@ -154,12 +167,23 @@ class UserManager:
                 item = KnowledgeItem(item_record["title"], item_record["content"])
                 user.add_knowledge(item)
             self.users[username] = user
+        for group_name, member_names in data.get("groups", {}).items():
+            group = Group(group_name)
+            for username in member_names:
+                if username in self.users:
+                    group.add_member(self.users[username])
+            self.groups[group_name] = group
 
     def _save_users(self):
         # save the hash table to the protected text file
-        data = {"users": {}}
+        data = {"users": {}, "groups": {}}
         for username, user in self.users.items():
             data["users"][username] = user.to_record()
+        for name, group in self.groups.items():
+            member_names = []
+            for user in group.get_members():
+                member_names.append(user.get_username())
+            data["groups"][name] = member_names
         with open(self._storage_path, "w", encoding="utf-8") as file:
             json.dump(data, file, indent=2)
         if os.name == "nt":
@@ -192,8 +216,27 @@ class UserManager:
             return False
         removed = admin.remove_user(self.users, target_name)
         if removed:
+            for group in self.groups.values():
+                group.remove_member(target_name)
             self._save_users()
         return removed
+
+    def add_group(self, name):
+        # add a group to the group hash table and save it
+        name = name.strip()
+        if not name or name in self.groups:
+            return False
+        self.groups[name] = Group(name)
+        self._save_users()
+        return True
+
+    def add_group_member(self, group_name, username):
+        # add an existing user to a group and save the change
+        if group_name not in self.groups or username not in self.users:
+            return False
+        self.groups[group_name].add_member(self.users[username])
+        self._save_users()
+        return True
 
     def save(self):
         # save changes made to a user's knowledge
@@ -235,7 +278,10 @@ def admin_menu(admin, manager):
         print("\n1. List users")
         print("2. Add user")
         print("3. Remove user")
-        print("4. Log out")
+        print("4. List groups")
+        print("5. Create group")
+        print("6. Add user to group")
+        print("7. Log out")
         choice = input("Choose an option: ").strip()
         if choice == "1":
             for username in sorted(manager.users):
@@ -257,9 +303,30 @@ def admin_menu(admin, manager):
             else:
                 print("User not found or you cannot remove your own account.")
         elif choice == "4":
+            for name in sorted(manager.groups):
+                member_names = []
+                for user in manager.groups[name].get_members():
+                    member_names.append(user.get_username())
+                print(name + ": " + ", ".join(member_names))
+            if not manager.groups:
+                print("No groups have been created.")
+        elif choice == "5":
+            name = input("New group name: ").strip()
+            if manager.add_group(name):
+                print("Group created.")
+            else:
+                print("Group name must be new and not empty.")
+        elif choice == "6":
+            name = input("Group name: ").strip()
+            username = input("Username to add: ").strip()
+            if manager.add_group_member(name, username):
+                print("User added to group.")
+            else:
+                print("Group or user not found.")
+        elif choice == "7":
             break
         else:
-            print("Choose 1, 2, 3, or 4.")
+            print("Choose 1, 2, 3, 4, 5, 6, or 7.")
 
 
 def main():
