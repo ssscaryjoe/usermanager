@@ -95,9 +95,11 @@ class AdminUser(User):
 
 # class for a piece of stored information
 class KnowledgeItem:
-    def __init__(self, title, content):
+    def __init__(self, title, content, shared_users=None, shared_groups=None):
         self._title = title  # protected title
         self.__content = content  # private content
+        self._shared_users = shared_users or []
+        self._shared_groups = shared_groups or []
 
     def get_content(self):
         # public method to access private content
@@ -109,7 +111,29 @@ class KnowledgeItem:
 
     def to_record(self):
         # save this knowledge item's content
-        return {"title": self._title, "content": self.__content}
+        return {
+            "title": self._title,
+            "content": self.__content,
+            "shared_users": self._shared_users,
+            "shared_groups": self._shared_groups
+        }
+
+    def share_with_user(self, username):
+        # allow one user to view this knowledge item
+        if username not in self._shared_users:
+            self._shared_users.append(username)
+
+    def share_with_group(self, group_name):
+        # allow a group to view this knowledge item
+        if group_name not in self._shared_groups:
+            self._shared_groups.append(group_name)
+
+    def can_be_seen_by(self, username, group_names):
+        # check whether a user has been given access to this item
+        for group_name in group_names:
+            if group_name in self._shared_groups:
+                return True
+        return username in self._shared_users
 
 
 # class to group multiple users together
@@ -220,7 +244,12 @@ class UserManager:
             user_class = AdminUser if record.get("admin", False) else User
             user = user_class(username, record["password"])
             for item_record in record.get("knowledge", []):
-                item = KnowledgeItem(item_record["title"], item_record["content"])
+                item = KnowledgeItem(
+                    item_record["title"],
+                    item_record["content"],
+                    item_record.get("shared_users", []),
+                    item_record.get("shared_groups", [])
+                )
                 user.add_knowledge(item)
             self.users[username] = user
         for group_name, member_names in data.get("groups", {}).items():
@@ -295,6 +324,37 @@ class UserManager:
         self._save_users()
         return True
 
+    def share_knowledge(self, owner, item_number, share_type, recipient):
+        # give a user or group access to one of the owner's knowledge items
+        knowledge = owner.get_knowledge()
+        if item_number < 1 or item_number > len(knowledge):
+            return False
+        item = knowledge[item_number - 1]
+        if share_type == "user" and recipient in self.users:
+            item.share_with_user(recipient)
+        elif share_type == "group" and recipient in self.groups:
+            item.share_with_group(recipient)
+        else:
+            return False
+        self._save_users()
+        return True
+
+    def get_visible_knowledge(self, user):
+        # return knowledge owned by the user or shared with them
+        visible = []
+        username = user.get_username()
+        group_names = []
+        for name, group in self.groups.items():
+            for member in group.get_members():
+                if member.get_username() == username:
+                    group_names.append(name)
+                    break
+        for owner_name, owner in self.users.items():
+            for item in owner.get_knowledge():
+                if owner is user or item.can_be_seen_by(username, group_names):
+                    visible.append((owner_name, item))
+        return visible
+
     def save(self):
         # save changes made to a user's knowledge
         self._save_users()
@@ -305,7 +365,8 @@ def add_knowledge_menu(user, manager):
     while True:
         print("\n1. Add knowledge")
         print("2. View knowledge")
-        print("3. Log out")
+        print("3. Share knowledge")
+        print("4. Log out")
         choice = input("Choose an option: ").strip()
         if choice == "1":
             title = input("Knowledge title: ").strip()
@@ -318,15 +379,42 @@ def add_knowledge_menu(user, manager):
                 manager.save()
                 print("Knowledge saved.")
         elif choice == "2":
-            for item in user.get_knowledge():
-                print("\n" + item.get_title() + ":")
+            knowledge = manager.get_visible_knowledge(user)
+            for owner_name, item in knowledge:
+                if owner_name == user.get_username():
+                    print("\n" + item.get_title() + " (your knowledge):")
+                else:
+                    print("\n" + item.get_title() + " (shared by " + owner_name + "):")
                 print(item.get_content())
-            if not user.get_knowledge():
-                print("No knowledge has been saved yet.")
+            if not knowledge:
+                print("No knowledge is available.")
         elif choice == "3":
+            knowledge = user.get_knowledge()
+            if not knowledge:
+                print("Add knowledge before sharing it.")
+                continue
+            for number, item in enumerate(knowledge, start=1):
+                print(str(number) + ". " + item.get_title())
+            try:
+                item_number = int(input("Knowledge number to share: ").strip())
+            except ValueError:
+                print("Enter a valid knowledge number.")
+                continue
+            print("1. Share with a user")
+            print("2. Share with a group")
+            share_choice = input("Choose an option: ").strip()
+            recipient = input("Username or group name: ").strip()
+            share_type = "user" if share_choice == "1" else "group"
+            if share_choice not in ("1", "2"):
+                print("Choose 1 or 2.")
+            elif manager.share_knowledge(user, item_number, share_type, recipient):
+                print("Knowledge shared.")
+            else:
+                print("Knowledge item, user, or group was not found.")
+        elif choice == "4":
             break
         else:
-            print("Choose 1, 2, or 3.")
+            print("Choose 1, 2, 3, or 4.")
 
 
 def admin_menu(admin, manager):
