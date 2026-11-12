@@ -1,7 +1,9 @@
 import getpass
 import json
 import os
+import shutil
 import subprocess
+import sys
 
 
 def has_admin_privileges():
@@ -11,6 +13,26 @@ def has_admin_privileges():
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     if hasattr(os, "geteuid"):
         return os.geteuid() == 0
+    return False
+
+
+def start_as_admin():
+    # ask the operating system to restart this program with admin privileges
+    if os.name == "nt":
+        import ctypes
+        result = ctypes.windll.shell32.ShellExecuteW(
+            None,
+            "runas",
+            sys.executable,
+            subprocess.list2cmdline(sys.argv),
+            os.getcwd(),
+            1
+        )
+        return result > 32
+
+    sudo = shutil.which("sudo")
+    if sudo:
+        os.execvp(sudo, [sudo, sys.executable] + sys.argv)
     return False
 
 
@@ -147,6 +169,30 @@ class UserManager:
         permission = "F"
         if is_directory:
             permission = "(OI)(CI)F"
+        account = subprocess.run(
+            ["whoami"],
+            check=True,
+            capture_output=True,
+            text=True
+        ).stdout.strip()
+        subprocess.run(
+            ["icacls", path, "/inheritance:r"],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        subprocess.run(
+            ["icacls", path, "/remove:g", account],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        subprocess.run(
+            ["icacls", path, "/remove:d", account],
+            check=True,
+            capture_output=True,
+            text=True
+        )
         subprocess.run(
             ["icacls", path, "/setowner", "*S-1-5-32-544"],
             check=True,
@@ -155,7 +201,7 @@ class UserManager:
         )
         subprocess.run(
             [
-                "icacls", path, "/inheritance:r", "/grant:r",
+                "icacls", path, "/grant:r",
                 "*S-1-5-18:" + permission,
                 "*S-1-5-32-544:" + permission
             ],
@@ -343,7 +389,9 @@ def admin_menu(admin, manager):
 def main():
     # start the user manager and keep showing the main menu
     if not has_admin_privileges():
-        print("Run this program as Administrator or root.")
+        if start_as_admin():
+            return
+        print("Administrator permission was not granted.")
         return
     folder = os.path.dirname(os.path.abspath(__file__))
     storage_path = os.path.join(folder, "private_folder", "passwords.txt")
