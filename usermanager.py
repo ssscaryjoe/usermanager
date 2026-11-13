@@ -6,8 +6,27 @@ import shutil
 import subprocess
 import sys
 
-
-def has_admin_privileges():
+# Note: I did not realise the debugging print statement requirements until after most of the code
+# To make it easier for debugging, and the assesor, I am making a universal debugging class
+# to debug all objects, and classes including private attributes, and print them.
+# i believe this is a better solution than adding print statements that are scattered
+# since this is universal, is more readable, has all the information
+# and shows better knowledge of object oriented programming
+# I will write comments showing examples of what this was used to debug in the late code
+# i may also use this function throughout the code in the debug comments everywhere to show examples
+# of real use cases
+# I will also label this with "DEBUGNOTE" to make it easier to find, in case you want to control f
+# the following code is wrapped in triple quotes as a commend to activate and unactivate. Its excluded by default
+# you will have to reactivate it to use the examples
+# i will try to use triple quotes for all the code to seperate it from the comments about it so that
+# the comments are not activated with the code
+# complex version
+"""
+    def debug(self, obj):
+        for attr in dir(obj):
+            print(f"{attr}: {getattr(obj, attr)}")
+"""
+what def has_admin_privileges():
     # check for Administrator on Windows or root on other supported systems
     if os.name == "nt":
         import ctypes
@@ -18,7 +37,8 @@ def has_admin_privileges():
 
 
 def start_as_admin():
-    # ask the operating system to restart this program with admin privileges
+    #NOTE: THIS FUNCTION IS NOT TESTED ON OTHER OS, ONLY WINDOWS
+    # NOTE: This function makes the program need admin, which may be a weakness since regular users may have to run it as admin, but is ncessary to protect the password file, until  encryption is put in.
     if os.name == "nt":
         import ctypes
         result = ctypes.windll.shell32.ShellExecuteW(
@@ -36,12 +56,13 @@ def start_as_admin():
         os.execvp(sudo, [sudo, sys.executable] + sys.argv)
     return False
 
-
 # user class for standard accounts
 class User:
     def __init__(self, username, password):
+    
         self._username = username  # protected attribute
         self.__password = password  # private attribute, stored as plain text
+        #NOTE: python private is not really private, this may be insecure without encryption
         self._knowledge = []  # protected list for knowledge items
 
     def get_username(self):
@@ -167,6 +188,7 @@ class Group:
 class UserManager:
     def __init__(self, storage_path):
         if not has_admin_privileges():
+            #NOTE: This check is necessary to protect the password file, until encryption is implemented.
             raise PermissionError("Run this program as Administrator or root.")
         self._storage_path = storage_path
         self.users = {}  # hash table of usernames and User objects
@@ -190,7 +212,8 @@ class UserManager:
                 os.chmod(self._storage_path, 0o600)
 
     def _set_windows_permissions(self, path, is_directory):
-        # restrict storage to Windows Administrators and SYSTEM
+        # DEBUGGING NOTE: this FUnction is only tested in windows, and may not work on other OS
+        # only needed for 
         permission = "F"
         if is_directory:
             permission = "(OI)(CI)F"
@@ -253,12 +276,20 @@ class UserManager:
                 )
                 user.add_knowledge(item)
             self.users[username] = user
+            # DEBUGNOTE: Check a saved account and its knowledge after loading.
+            """
+            debugger.debug(user)
+            """
         for group_name, member_names in data.get("groups", {}).items():
             group = Group(group_name)
             for username in member_names:
                 if username in self.users:
                     group.add_member(self.users[username])
             self.groups[group_name] = group
+            # DEBUGNOTE: Check that the saved group members loaded correctly.
+            """
+            debugger.debug(group)
+            """
 
     def _save_users(self):
         # save the hash table to the protected text file
@@ -322,6 +353,10 @@ class UserManager:
         if group_name not in self.groups or username not in self.users:
             return False
         self.groups[group_name].add_member(self.users[username])
+        # DEBUGNOTE: Check the group after adding a member.
+        """
+        debugger.debug(self.groups[group_name])
+        """
         self._save_users()
         return True
 
@@ -337,6 +372,10 @@ class UserManager:
             item.share_with_group(recipient)
         else:
             return False
+        # DEBUGNOTE: Check the sharing recipients saved on the knowledge item.
+        """
+        debugger.debug(item)
+        """
         self._save_users()
         return True
 
@@ -377,6 +416,10 @@ def add_knowledge_menu(user, manager):
             else:
                 item = KnowledgeItem(title, content)
                 user.add_knowledge(item)
+                # DEBUGNOTE: Check a newly created knowledge item.
+                """
+                debugger.debug(item)
+                """
                 manager.save()
                 print("Knowledge saved.")
         elif choice == "2":
@@ -488,7 +531,8 @@ def main():
     folder = os.path.dirname(os.path.abspath(__file__))
     storage_path = os.path.join(folder, "private_folder", "passwords.txt")
     manager = UserManager(storage_path)
-
+    # DEBUGGING NOTE: This code may not work if private_folder does not exist, untested. ALso if it does work it mahy create a folder.
+    #also, doesnt work if read only 
     if not manager.users:
         print("Create the initial administrator account.")
         username = ""
