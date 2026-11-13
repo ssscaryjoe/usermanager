@@ -359,22 +359,17 @@ class UserManager:
             else:
                 user = user_class(username, record["password"])
                 user._legacy_password = record["password"]
+            # DEBUG: Used after reload to check account type and admin status.
+            # This helped catch a constructor mismatch for saved admin accounts.
+            # print(username, type(user).__name__, user.is_admin())
             self._pending_knowledge[username] = record.get("knowledge", [])
             self.users[username] = user
-            # DEBUGNOTE: Check a saved account and its knowledge after loading.
-            """
-            debugger.debug(user)
-            """
         for group_name, member_names in data.get("groups", {}).items():
             group = Group(group_name)
             for username in member_names:
                 if username in self.users:
                     group.add_member(self.users[username])
             self.groups[group_name] = group
-            # DEBUGNOTE: Check that the saved group members loaded correctly.
-            """
-            debugger.debug(group)
-            """
 
     def unlock_knowledge(self, admin, password):
         # use the verified admin password as the in-memory XOR key
@@ -439,6 +434,9 @@ class UserManager:
         user_class = AdminUser if is_admin else User
         self.users[username] = user_class(username, password)
         self._save_users()
+        # DEBUG: Used after removing and recreating an account to check for old shared items.
+        # This exposed that a reused username could regain access through a stale direct share.
+        # print([item.get_title() for owner, item in self.get_visible_knowledge(self.users[username])])
         return True
 
     def authenticate(self, username, password):
@@ -473,10 +471,6 @@ class UserManager:
         if group_name not in self.groups or username not in self.users:
             return False
         self.groups[group_name].add_member(self.users[username])
-        # DEBUGNOTE: Check the group after adding a member.
-        """
-        debugger.debug(self.groups[group_name])
-        """
         self._save_users()
         return True
 
@@ -492,10 +486,6 @@ class UserManager:
             item.share_with_group(recipient)
         else:
             return False
-        # DEBUGNOTE: Check the sharing recipients saved on the knowledge item.
-        """
-        debugger.debug(item)
-        """
         self._save_users()
         return True
 
@@ -513,6 +503,9 @@ class UserManager:
             for item in owner.get_knowledge():
                 if owner is user or item.can_be_seen_by(username, group_names):
                     visible.append((owner_name, item))
+        # DEBUG: Used to compare visible knowledge for a group member and an outsider.
+        # This confirmed the access check showed shared items only to permitted users.
+        # print(username, [item.get_title() for owner_name, item in visible])
         return visible
 
     def save(self):
@@ -536,10 +529,6 @@ def add_knowledge_menu(user, manager):
             else:
                 item = KnowledgeItem(title, content)
                 user.add_knowledge(item)
-                # DEBUGNOTE: Check a newly created knowledge item.
-                """
-                debugger.debug(item)
-                """
                 manager.save()
                 print("Knowledge saved.")
         elif choice == "2":
