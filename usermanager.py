@@ -1,7 +1,10 @@
 # USER MANAGER PROGRAM(DOUBLES AS A CHATTING SYSTEM)
 import getpass
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -26,7 +29,7 @@ import sys
         for attr in dir(obj):
             print(f"{attr}: {getattr(obj, attr)}")
 """
-what def has_admin_privileges():
+def has_admin_privileges():
     # check for Administrator on Windows or root on other supported systems
     if os.name == "nt":
         import ctypes
@@ -38,7 +41,7 @@ what def has_admin_privileges():
 
 def start_as_admin():
     #NOTE: THIS FUNCTION IS NOT TESTED ON OTHER OS, ONLY WINDOWS
-    # NOTE: This function makes the program need admin, which may be a weakness since regular users may have to run it as admin, but is ncessary to protect the password file, until  encryption is put in.
+    # request operating-system administrator access for the protected data file
     if os.name == "nt":
         import ctypes
         result = ctypes.windll.shell32.ShellExecuteW(
@@ -56,13 +59,59 @@ def start_as_admin():
         os.execvp(sudo, [sudo, sys.executable] + sys.argv)
     return False
 
+
+def xor_encrypt(text, key):
+    # XOR text bytes with a repeating password key and store them as hexadecimal.
+    key_bytes = key.encode("utf-8")
+    if not key_bytes:
+        raise ValueError("The password key must not be empty.")
+    text_bytes = text.encode("utf-8")
+    encrypted = bytes(
+        value ^ key_bytes[index % len(key_bytes)]
+        for index, value in enumerate(text_bytes)
+    )
+    return encrypted.hex()
+
+
+def xor_decrypt(encrypted_text, key):
+    # Reverse the XOR operation using the same password key.
+    key_bytes = key.encode("utf-8")
+    if not key_bytes:
+        raise ValueError("The password key must not be empty.")
+    encrypted_bytes = bytes.fromhex(encrypted_text)
+    decrypted = bytes(
+        value ^ key_bytes[index % len(key_bytes)]
+        for index, value in enumerate(encrypted_bytes)
+    )
+    return decrypted.decode("utf-8")
+
+
+def hash_password(password, salt):
+    # create a slow salted password hash for account login
+    return hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt, 200000
+    )
+
+
 # user class for standard accounts
+# Class: User
+# Purpose: Represents a standard account and its saved knowledge.
+# Encapsulation: The password hash is private and checked through a method.
+# Inheritance: Parent class of AdminUser, which adds administrator behavior.
 class User:
-    def __init__(self, username, password):
-    
+    def __init__(self, username, password=None, password_salt=None, password_hash=None):
         self._username = username  # protected attribute
-        self.__password = password  # private attribute, stored as plain text
-        #NOTE: python private is not really private, this may be insecure without encryption
+        self.__password_salt = password_salt or secrets.token_bytes(16)
+        if isinstance(self.__password_salt, str):
+            self.__password_salt = bytes.fromhex(self.__password_salt)
+        if password_hash:
+            if isinstance(password_hash, str):
+                password_hash = bytes.fromhex(password_hash)
+            self.__password_hash = password_hash
+        else:
+            self.__password_hash = hash_password(password, self.__password_salt)
+        # legacy password is used only to migrate older knowledge records
+        self._legacy_password = None
         self._knowledge = []  # protected list for knowledge items
 
     def get_username(self):
@@ -70,8 +119,9 @@ class User:
         return self._username
 
     def check_password(self, pwd):
-        # public method to check the private password without exposing it
-        return self.__password == pwd
+        # public method to check the password without saving it
+        password_hash = hash_password(pwd, self.__password_salt)
+        return hmac.compare_digest(self.__password_hash, password_hash)
 
     def add_knowledge(self, item):
         # add a piece of knowledge to this user's protected list
@@ -85,22 +135,27 @@ class User:
         # public method to check this user's account type
         return False
 
-    def to_record(self):
-        # prepare this user's data for the protected storage file
+    def to_record(self, knowledge_key):
+        # prepare this user's hashed password and knowledge for storage
         knowledge = []
         for item in self._knowledge:
-            knowledge.append(item.to_record())
+            knowledge.append(item.to_record(knowledge_key))
         return {
-            "password": self.__password,
+            "password_salt": self.__password_salt.hex(),
+            "password_hash": self.__password_hash.hex(),
             "admin": self.is_admin(),
             "knowledge": knowledge
         }
 
 
 # admin user class that inherits from user
+# Class: AdminUser
+# Purpose: Represents an account that can manage users.
+# Encapsulation: The administrator flag is private and checked by is_admin.
+# Inheritance: Child of User so it reuses normal account data and behavior.
 class AdminUser(User):
-    def __init__(self, username, password):
-        super().__init__(username, password)
+    def __init__(self, username, password=None, password_salt=None, password_hash=None):
+        super().__init__(username, password, password_salt, password_hash)
         self.__is_admin = True  # private admin flag
 
     def is_admin(self):
@@ -116,6 +171,10 @@ class AdminUser(User):
 
 
 # class for a piece of stored information
+# Class: KnowledgeItem
+# Purpose: Represents XOR-protected text that can be shared with users or groups.
+# Encapsulation: The content is private and is accessed through get_content.
+# Inheritance: No custom parent or child class.
 class KnowledgeItem:
     def __init__(self, title, content, shared_users=None, shared_groups=None):
         self._title = title  # protected title
@@ -131,14 +190,29 @@ class KnowledgeItem:
         # public method to view the knowledge title
         return self._title
 
-    def to_record(self):
-        # save this knowledge item's content
+    def to_record(self, key):
+        # save this knowledge item with its content XOR encoded.
         return {
             "title": self._title,
-            "content": self.__content,
+            "content": xor_encrypt(self.__content, key),
+            "encrypted": True,
+            "key_type": "admin_password_xor",
             "shared_users": self._shared_users,
             "shared_groups": self._shared_groups
         }
+
+    @classmethod
+    def from_record(cls, record, key):
+        # load both older plaintext records and current XOR-encoded records.
+        content = record["content"]
+        if record.get("encrypted", False):
+            content = xor_decrypt(content, key)
+        return cls(
+            record["title"],
+            content,
+            record.get("shared_users", []),
+            record.get("shared_groups", [])
+        )
 
     def share_with_user(self, username):
         # allow one user to view this knowledge item
@@ -159,6 +233,10 @@ class KnowledgeItem:
 
 
 # class to group multiple users together
+# Class: Group
+# Purpose: Collects users so knowledge can be shared with the group.
+# Encapsulation: The member list is private and exposed as a copy.
+# Inheritance: No custom parent or child class.
 class Group:
     def __init__(self, name):
         self._name = name  # protected group name
@@ -185,14 +263,20 @@ class Group:
         return self._name
 
 
+# Class: UserManager
+# Purpose: Loads, saves, authenticates, and manages accounts and groups.
+# Encapsulation: The storage path is protected; dictionaries hold the managed objects.
+# Inheritance: No custom parent or child class.
 class UserManager:
     def __init__(self, storage_path):
         if not has_admin_privileges():
-            #NOTE: This check is necessary to protect the password file, until encryption is implemented.
+            # only operating-system administrators can access the data file
             raise PermissionError("Run this program as Administrator or root.")
         self._storage_path = storage_path
         self.users = {}  # hash table of usernames and User objects
         self.groups = {}  # hash table of group names and Group objects
+        self._knowledge_key = None
+        self._pending_knowledge = {}
         self._prepare_storage()
         self._load_users()
 
@@ -266,15 +350,16 @@ class UserManager:
             data = json.load(file)
         for username, record in data.get("users", {}).items():
             user_class = AdminUser if record.get("admin", False) else User
-            user = user_class(username, record["password"])
-            for item_record in record.get("knowledge", []):
-                item = KnowledgeItem(
-                    item_record["title"],
-                    item_record["content"],
-                    item_record.get("shared_users", []),
-                    item_record.get("shared_groups", [])
+            if "password_hash" in record:
+                user = user_class(
+                    username,
+                    password_salt=record["password_salt"],
+                    password_hash=record["password_hash"]
                 )
-                user.add_knowledge(item)
+            else:
+                user = user_class(username, record["password"])
+                user._legacy_password = record["password"]
+            self._pending_knowledge[username] = record.get("knowledge", [])
             self.users[username] = user
             # DEBUGNOTE: Check a saved account and its knowledge after loading.
             """
@@ -291,11 +376,46 @@ class UserManager:
             debugger.debug(group)
             """
 
+    def unlock_knowledge(self, admin, password):
+        # use the verified admin password as the in-memory XOR key
+        if not admin.is_admin() or not admin.check_password(password):
+            return False
+        self._knowledge_key = password
+        for username, records in self._pending_knowledge.items():
+            user = self.users[username]
+            for record in records:
+                if record.get("key_type") == "admin_password_xor":
+                    key = password
+                elif record.get("encrypted", False):
+                    key = user._legacy_password
+                    if key is None:
+                        raise ValueError("Cannot migrate this knowledge item.")
+                else:
+                    key = None
+                if key is None:
+                    item = KnowledgeItem(
+                        record["title"],
+                        record["content"],
+                        record.get("shared_users", []),
+                        record.get("shared_groups", [])
+                    )
+                else:
+                    item = KnowledgeItem.from_record(record, key)
+                user.add_knowledge(item)
+            user._legacy_password = None
+        self._pending_knowledge = {}
+        self._save_users()
+        return True
+
     def _save_users(self):
         # save the hash table to the protected text file
+        if self._knowledge_key is None:
+            for user in self.users.values():
+                if user.get_knowledge():
+                    raise ValueError("Admin must unlock knowledge before saving.")
         data = {"users": {}, "groups": {}}
         for username, user in self.users.items():
-            data["users"][username] = user.to_record()
+            data["users"][username] = user.to_record(self._knowledge_key)
         for name, group in self.groups.items():
             member_names = []
             for user in group.get_members():
@@ -547,7 +667,19 @@ def main():
                 break
             print("Passwords must match and must not be empty.")
         manager.add_user(username, password, is_admin=True)
+        manager.unlock_knowledge(manager.users[username], password)
         print("Administrator account created.")
+    else:
+        # Admin login unlocks shared knowledge for this program session.
+        print("Log in as an administrator to unlock saved knowledge.")
+        while True:
+            username = input("Administrator username: ").strip()
+            password = getpass.getpass("Administrator password: ")
+            admin = manager.authenticate(username, password)
+            if admin and admin.is_admin():
+                manager.unlock_knowledge(admin, password)
+                break
+            print("Administrator username or password is incorrect.")
 
     while True:
         print("\n1. Log in")
